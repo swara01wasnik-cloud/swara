@@ -1,4 +1,4 @@
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type SetAllCookies } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 // Server client — used in API route handlers (reads the auth session from cookies).
@@ -13,7 +13,7 @@ export async function createClient() {
         getAll() {
           return cookieStore.getAll();
         },
-        setAll(cookiesToSet) {
+        setAll: ((cookiesToSet) => {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
               cookieStore.set(name, value, options)
@@ -21,7 +21,7 @@ export async function createClient() {
           } catch {
             // Called from a Server Component — can be ignored if middleware refreshes sessions
           }
-        },
+        }) as SetAllCookies,
       },
     }
   );
