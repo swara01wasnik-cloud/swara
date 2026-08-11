@@ -239,6 +239,7 @@ select
   p.last_seen,
   conv.id as conversation_id,
   lm.content as last_message,
+  lm.type as last_message_type,
   lm.sender_id as last_message_sender,
   lm.created_at as last_message_at,
   coalesce(uc.unread_count, 0) as unread_count
@@ -261,7 +262,7 @@ left join lateral (
     and m.read_at is null
 ) uc on true
 left join lateral (
-  select m.content, m.sender_id, m.created_at
+  select m.content, m.type, m.sender_id, m.created_at
   from public.messages m
   where m.conversation_id = conv.id
   order by m.created_at desc

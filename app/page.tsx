@@ -19,6 +19,7 @@ type BackendContactRow = {
   last_seen: string | null;
   conversation_id: string | null;
   last_message: string | null;
+  last_message_type: "text" | "image" | "audio" | null;
   last_message_sender: string | null;
   last_message_at: string | null;
   unread_count: number;
@@ -95,8 +96,11 @@ function toContact(row: BackendContactRow, meId: string): Contact {
     unread: row.unread_count,
     messages: [],
     conversationId: row.conversation_id ?? undefined,
-    preview: row.last_message
-      ? `${row.last_message_sender === meId ? "You: " : ""}${row.last_message}`
+    preview: row.last_message_type
+      ? `${row.last_message_sender === meId ? "You: " : ""}${previewText({
+          type: row.last_message_type,
+          content: row.last_message,
+        })}`
       : undefined,
   };
 }
@@ -128,6 +132,17 @@ export default function Home() {
   const activeContact = contacts.find((c) => c.id === activeId) ?? null;
   const activeMessages = activeContact ? messagesByContact[activeContact.id] ?? [] : [];
 
+  const refreshContacts = useCallback(async () => {
+    const res = await fetch("/api/contacts", { cache: "no-store" });
+    if (!res.ok) throw new Error("Failed to load contacts");
+    const { contacts: rows } = await res.json();
+    const mapped = (rows as BackendContactRow[]).map((r) =>
+      toContact(r, meIdRef.current ?? "")
+    );
+    contactsRef.current = mapped; // keep the ref in sync so selectContact can find the new one
+    setContacts(mapped);
+  }, []);
+
   // ---------- Load the signed-in user, their contacts, and subscribe to realtime ----------
   useEffect(() => {
     let cancelled = false;
@@ -144,12 +159,7 @@ export default function Home() {
         }
         meIdRef.current = user.id;
         setCurrentUser(user.email ?? user.id);
-
-        const res = await fetch("/api/contacts", { cache: "no-store" });
-        if (!res.ok) throw new Error("Failed to load contacts");
-        const { contacts: rows } = await res.json();
-        if (cancelled) return;
-        setContacts((rows as BackendContactRow[]).map((r) => toContact(r, user.id)));
+        await refreshContacts();
       } catch (err) {
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : "Failed to load contacts");
@@ -167,7 +177,13 @@ export default function Home() {
           // media_url the REST API mints — resolve it here for attachments.
           const row = payload.new as BackendMessageRow & { media_path?: string | null };
           const contact = contactsRef.current.find((c) => c.conversationId === row.conversation_id);
-          if (!contact) return;
+          if (!contact) {
+            // Message from a conversation this client hasn't mapped yet (e.g. a
+            // brand-new chat started by the other person) — refresh the sidebar
+            // so the conversation, preview, and unread badge appear live.
+            void refreshContacts().catch(() => {});
+            return;
+          }
           if (row.media_path && !row.media_url) {
             const { data: signed } = await supabase.storage
               .from("chat-media")
@@ -194,13 +210,40 @@ export default function Home() {
           );
         }
       )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "messages" },
+        (payload) => {
+          const row = payload.new as BackendMessageRow;
+          // Read receipts: when the other participant reads my message, their
+          // read_at update flips my ✓ to ✓✓ in real time.
+          if (!row.read_at || row.sender_id !== meIdRef.current) return;
+          const contact = contactsRef.current.find(
+            (c) => c.conversationId === row.conversation_id
+          );
+          if (!contact) return;
+          setMessagesByContact((prev) => {
+            const current = prev[contact.id];
+            if (!current) return prev;
+            let changed = false;
+            const updated = current.map((m) => {
+              if (m.sender === "me" && m.status !== "read") {
+                changed = true;
+                return { ...m, status: "read" as const };
+              }
+              return m;
+            });
+            return changed ? { ...prev, [contact.id]: updated } : prev;
+          });
+        }
+      )
       .subscribe();
 
     return () => {
       cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, [router]);
+  }, [router, refreshContacts]);
 
   const selectContact = useCallback(async (id: string) => {
     setActiveId(id);
@@ -326,15 +369,6 @@ export default function Home() {
     },
     [activeId]
   );
-
-  const refreshContacts = useCallback(async () => {
-    const res = await fetch("/api/contacts", { cache: "no-store" });
-    if (!res.ok) throw new Error("Failed to load contacts");
-    const { contacts: rows } = await res.json();
-    const mapped = (rows as BackendContactRow[]).map((r) => toContact(r, meIdRef.current ?? ""));
-    contactsRef.current = mapped; // keep the ref in sync so selectContact can find the new one
-    setContacts(mapped);
-  }, []);
 
   const handleContactAdded = useCallback(
     async (contactId: string) => {
