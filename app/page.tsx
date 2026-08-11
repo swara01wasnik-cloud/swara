@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Sidebar from "./components/sidebar";
 import ChatArea from "./components/chat-area";
 import EmptyState from "./components/empty-state";
+import NewChatModal from "./components/new-chat-modal";
 import { gradientFor, initialsFor, type Contact, type Message } from "./data/contacts";
 import { createClient } from "@/lib/supabase/client";
 
@@ -94,6 +95,7 @@ export default function Home() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [newChatOpen, setNewChatOpen] = useState(false);
 
   const meIdRef = useRef<string | null>(null);
   const contactsRef = useRef(contacts);
@@ -278,6 +280,30 @@ export default function Home() {
     [activeId]
   );
 
+  const refreshContacts = useCallback(async () => {
+    const res = await fetch("/api/contacts", { cache: "no-store" });
+    if (!res.ok) throw new Error("Failed to load contacts");
+    const { contacts: rows } = await res.json();
+    const mapped = (rows as BackendContactRow[]).map((r) => toContact(r, meIdRef.current ?? ""));
+    contactsRef.current = mapped; // keep the ref in sync so selectContact can find the new one
+    setContacts(mapped);
+  }, []);
+
+  const handleContactAdded = useCallback(
+    async (contactId: string) => {
+      try {
+        await refreshContacts();
+        // Open the new conversation immediately.
+        await selectContact(contactId);
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : "Failed to refresh contacts");
+      } finally {
+        setNewChatOpen(false);
+      }
+    },
+    [refreshContacts, selectContact]
+  );
+
   const handleLogout = useCallback(async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
@@ -300,6 +326,7 @@ export default function Home() {
           onSelect={selectContact}
           currentUser={currentUser}
           onLogout={handleLogout}
+          onNewChat={() => setNewChatOpen(true)}
         />
       </div>
       <div className={`${showChatList ? "hidden" : "flex"} md:flex h-full min-w-0 flex-1`}>
@@ -316,6 +343,7 @@ export default function Home() {
           <EmptyState />
         )}
       </div>
+      {newChatOpen && <NewChatModal onClose={() => setNewChatOpen(false)} onAdded={handleContactAdded} />}
     </div>
   );
 }

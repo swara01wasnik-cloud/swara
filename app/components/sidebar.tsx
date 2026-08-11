@@ -9,6 +9,7 @@ type SidebarProps = {
   onSelect: (id: string) => void;
   currentUser?: string | null;
   onLogout?: () => void;
+  onNewChat?: () => void;
 };
 
 function SearchIcon() {
@@ -79,7 +80,14 @@ function ContactRow({
   );
 }
 
-export default function Sidebar({ contacts, activeId, onSelect, currentUser, onLogout }: SidebarProps) {
+export default function Sidebar({
+  contacts,
+  activeId,
+  onSelect,
+  currentUser,
+  onLogout,
+  onNewChat,
+}: SidebarProps) {
   const [query, setQuery] = useState("");
 
   const filtered = useMemo(() => {
@@ -94,6 +102,7 @@ export default function Sidebar({ contacts, activeId, onSelect, currentUser, onL
         <h1 className="text-lg font-semibold tracking-tight text-zinc-100">Messages</h1>
         <button
           type="button"
+          onClick={onNewChat}
           title="New chat"
           className="grid h-9 w-9 place-items-center rounded-full bg-white/5 text-zinc-300 transition hover:bg-white/10 hover:text-white active:scale-95"
         >
@@ -121,7 +130,7 @@ export default function Sidebar({ contacts, activeId, onSelect, currentUser, onL
         ))}
         {filtered.length === 0 && (
           <p className="px-4 py-10 text-center text-sm text-zinc-500">
-            {currentUser ? "No contacts yet — add some in the database." : "No contacts found"}
+            {currentUser ? "No contacts yet — tap the pencil icon to add someone." : "No contacts found"}
           </p>
         )}
       </nav>
