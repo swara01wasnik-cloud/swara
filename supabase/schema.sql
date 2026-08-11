@@ -73,12 +73,31 @@ create table if not exists public.messages (
   id uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references public.conversations (id) on delete cascade,
   sender_id uuid not null references public.profiles (id) on delete cascade,
-  content text not null check (char_length(content) > 0),
+  content text,
   read_at timestamptz,
   created_at timestamptz not null default now()
 );
 
 create index if not exists messages_conv_created_idx on public.messages (conversation_id, created_at);
+
+-- ---------- 4b. MEDIA MESSAGES (image / audio attachments) ----------
+-- `type` distinguishes plain text from attachments; media_path is the
+-- object path inside the `chat-media` storage bucket (not a public URL —
+-- the API mints short-lived signed URLs on read since the bucket is private).
+alter table public.messages
+  add column if not exists type text not null default 'text' check (type in ('text', 'image', 'audio'));
+alter table public.messages
+  add column if not exists media_path text;
+alter table public.messages
+  add column if not exists media_mime text;
+alter table public.messages
+  add column if not exists duration_seconds numeric;
+
+alter table public.messages drop constraint if exists messages_content_or_media_check;
+alter table public.messages add constraint messages_content_or_media_check check (
+  (type = 'text' and content is not null and char_length(content) > 0)
+  or (type in ('image', 'audio') and media_path is not null)
+);
 
 -- ---------- 5. ROW LEVEL SECURITY ----------
 alter table public.profiles enable row level security;
@@ -159,6 +178,35 @@ create policy "messages updatable to mark read" on public.messages
     auth.uid() <> sender_id and exists (
       select 1 from public.conversation_participants cp
       where cp.conversation_id = conversation_id and cp.user_id = auth.uid()
+    )
+  );
+
+-- ---------- 5b. STORAGE (image / audio attachments) ----------
+-- Private bucket. Objects are stored under `{conversation_id}/{uuid}-{filename}`
+-- so RLS can check the requester is a participant of that conversation.
+insert into storage.buckets (id, name, public)
+values ('chat-media', 'chat-media', false)
+on conflict (id) do nothing;
+
+drop policy if exists "chat-media insertable by conversation participants" on storage.objects;
+create policy "chat-media insertable by conversation participants" on storage.objects
+  for insert to authenticated with check (
+    bucket_id = 'chat-media'
+    and exists (
+      select 1 from public.conversation_participants cp
+      where cp.conversation_id = (storage.foldername(name))[1]::uuid
+        and cp.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "chat-media readable by conversation participants" on storage.objects;
+create policy "chat-media readable by conversation participants" on storage.objects
+  for select to authenticated using (
+    bucket_id = 'chat-media'
+    and exists (
+      select 1 from public.conversation_participants cp
+      where cp.conversation_id = (storage.foldername(name))[1]::uuid
+        and cp.user_id = auth.uid()
     )
   );
 

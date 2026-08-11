@@ -1,11 +1,17 @@
 export type MessageStatus = "sent" | "delivered" | "read";
+export type MessageKind = "text" | "image" | "audio";
 
 export type Message = {
   id: string;
   sender: "me" | "them";
+  kind: MessageKind;
   text: string;
   time: string;
   status?: MessageStatus;
+  /** Signed URL for image/audio attachments (short-lived, re-fetched with the message list). */
+  mediaUrl?: string;
+  mediaMime?: string;
+  durationSeconds?: number;
 };
 
 export type Contact = {

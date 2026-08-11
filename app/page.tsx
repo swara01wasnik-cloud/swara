@@ -7,6 +7,7 @@ import ChatArea from "./components/chat-area";
 import EmptyState from "./components/empty-state";
 import NewChatModal from "./components/new-chat-modal";
 import { gradientFor, initialsFor, type Contact, type Message } from "./data/contacts";
+import type { ChatInputPayload } from "./components/chat-input";
 import { createClient } from "@/lib/supabase/client";
 
 type BackendContactRow = {
@@ -27,7 +28,11 @@ type BackendMessageRow = {
   id: string;
   conversation_id: string;
   sender_id: string;
-  content: string;
+  content: string | null;
+  type: "text" | "image" | "audio";
+  media_url: string | null;
+  media_mime: string | null;
+  duration_seconds: number | null;
   read_at: string | null;
   created_at: string;
 };
@@ -56,14 +61,24 @@ function formatLastSeen(iso: string | null, online: boolean): string {
   return `last seen ${d.toLocaleDateString()}`;
 }
 
+function previewText(m: Pick<BackendMessageRow, "type" | "content">): string {
+  if (m.type === "image") return "📷 Photo";
+  if (m.type === "audio") return "🎤 Voice message";
+  return m.content ?? "";
+}
+
 function toMessage(row: BackendMessageRow, meId: string): Message {
   const d = new Date(row.created_at);
   return {
     id: row.id,
     sender: row.sender_id === meId ? "me" : "them",
-    text: row.content,
+    kind: row.type,
+    text: row.content ?? "",
     time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     status: row.read_at ? "read" : "sent",
+    mediaUrl: row.media_url ?? undefined,
+    mediaMime: row.media_mime ?? undefined,
+    durationSeconds: row.duration_seconds ?? undefined,
   };
 }
 
@@ -147,10 +162,18 @@ export default function Home() {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages" },
-        (payload) => {
-          const row = payload.new as BackendMessageRow;
+        async (payload) => {
+          // Realtime payloads carry the raw row (media_path), not the signed
+          // media_url the REST API mints — resolve it here for attachments.
+          const row = payload.new as BackendMessageRow & { media_path?: string | null };
           const contact = contactsRef.current.find((c) => c.conversationId === row.conversation_id);
           if (!contact) return;
+          if (row.media_path && !row.media_url) {
+            const { data: signed } = await supabase.storage
+              .from("chat-media")
+              .createSignedUrl(row.media_path, 60 * 60);
+            row.media_url = signed?.signedUrl ?? null;
+          }
           const msg = toMessage(row, meIdRef.current ?? "");
           setMessagesByContact((prev) => {
             const existing = prev[contact.id] ?? [];
@@ -163,7 +186,7 @@ export default function Home() {
                 ? {
                     ...c,
                     unread: activeIdRef.current === c.id || msg.sender === "me" ? 0 : c.unread + 1,
-                    preview: `${msg.sender === "me" ? "You: " : ""}${msg.text}`,
+                    preview: `${msg.sender === "me" ? "You: " : ""}${previewText(row)}`,
                     lastActive: msg.time,
                   }
                 : c
@@ -233,7 +256,7 @@ export default function Home() {
   }, []);
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (payload: ChatInputPayload) => {
       if (!activeId) return;
       const contact = contactsRef.current.find((c) => c.id === activeId);
       if (!contact) return;
@@ -255,10 +278,32 @@ export default function Home() {
           loadedConvsRef.current.add(contact.id);
         }
 
+        const body: Record<string, unknown> = { conversation_id: conversationId };
+
+        if (payload.kind === "text") {
+          body.type = "text";
+          body.content = payload.text;
+        } else {
+          // Upload straight to the private bucket; storage RLS checks the
+          // uploader is a participant of the {conversation_id} path prefix.
+          const ext = payload.file.name.includes(".") ? payload.file.name.split(".").pop() : "bin";
+          const path = `${conversationId}/${crypto.randomUUID()}.${ext}`;
+          const supabase = createClient();
+          const { error: uploadError } = await supabase.storage
+            .from("chat-media")
+            .upload(path, payload.file, { contentType: payload.file.type });
+          if (uploadError) throw uploadError;
+
+          body.type = payload.kind;
+          body.media_path = path;
+          body.media_mime = payload.file.type;
+          if (payload.kind === "audio") body.duration_seconds = payload.durationSeconds;
+        }
+
         const res = await fetch("/api/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversation_id: conversationId, content: text }),
+          body: JSON.stringify(body),
         });
         if (!res.ok) throw new Error("Failed to send message");
         const { message } = await res.json();
@@ -270,7 +315,9 @@ export default function Home() {
         });
         setContacts((prev) =>
           prev.map((c) =>
-            c.id === contact.id ? { ...c, lastActive: msg.time, preview: `You: ${msg.text}` } : c
+            c.id === contact.id
+              ? { ...c, lastActive: msg.time, preview: `You: ${previewText(message as BackendMessageRow)}` }
+              : c
           )
         );
       } catch (err) {

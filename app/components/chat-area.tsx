@@ -3,14 +3,14 @@
 import { useEffect, useRef } from "react";
 import type { Contact, Message } from "../data/contacts";
 import MessageBubble from "./message-bubble";
-import ChatInput from "./chat-input";
+import ChatInput, { type ChatInputPayload } from "./chat-input";
 
 type ChatAreaProps = {
   contact: Contact;
   messages: Message[];
   typing: boolean;
   loading?: boolean;
-  onSend: (text: string) => void;
+  onSend: (payload: ChatInputPayload) => void;
   onBack: () => void;
 };
 
