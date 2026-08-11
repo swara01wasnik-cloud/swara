@@ -115,6 +115,9 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
+  const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "connected" | "error">(
+    "connecting"
+  );
 
   const meIdRef = useRef<string | null>(null);
   const contactsRef = useRef(contacts);
@@ -146,6 +149,7 @@ export default function Home() {
   // ---------- Load the signed-in user, their contacts, and subscribe to realtime ----------
   useEffect(() => {
     let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
     const supabase = createClient();
 
     (async () => {
@@ -165,9 +169,17 @@ export default function Home() {
           setLoadError(err instanceof Error ? err.message : "Failed to load contacts");
         }
       }
+      if (cancelled) return;
+
+      // Subscribed only after auth.getUser() resolves so the socket carries a
+      // valid session token from the start (a channel opened earlier can end
+      // up unauthenticated and silently receive nothing, which RLS then makes
+      // look identical to "realtime is broken" instead of erroring loudly).
+      channel = subscribeChannel();
     })();
 
-    const channel = supabase
+    function subscribeChannel() {
+      return supabase
       .channel("chat-realtime")
       .on(
         "postgres_changes",
@@ -237,11 +249,18 @@ export default function Home() {
           });
         }
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        if (status === "SUBSCRIBED") setRealtimeStatus("connected");
+        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          setRealtimeStatus("error");
+          if (err) console.error("Realtime subscription error:", err.message);
+        }
+      });
+    }
 
     return () => {
       cancelled = true;
-      supabase.removeChannel(channel);
+      if (channel) supabase.removeChannel(channel);
     };
   }, [router, refreshContacts]);
 
@@ -398,6 +417,12 @@ export default function Home() {
       {loadError && (
         <div className="absolute left-1/2 top-4 z-50 -translate-x-1/2 rounded-full bg-red-500/15 px-4 py-2 text-xs text-red-300 ring-1 ring-red-500/30">
           {loadError}
+        </div>
+      )}
+      {!loadError && realtimeStatus === "error" && (
+        <div className="absolute left-1/2 top-4 z-50 -translate-x-1/2 rounded-full bg-amber-500/15 px-4 py-2 text-xs text-amber-300 ring-1 ring-amber-500/30">
+          Live updates disconnected — enable Realtime for the `messages` table in Supabase
+          (Database → Replication) or reload.
         </div>
       )}
       <div className={`${showChatList ? "flex" : "hidden"} md:flex h-full w-full shrink-0 md:w-80 lg:w-96`}>
